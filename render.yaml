@@ -12,5 +12,3 @@ services:
         value: sqlite:///database.db
       - key: MOVIE_CHANNEL_ID
         sync: false
-      - key: RENDER_EXTERNAL_URL
-        fromValue: true
