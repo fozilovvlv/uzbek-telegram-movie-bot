@@ -103,6 +103,8 @@ async def main():
     # Bazaga ulanish
     try:
         await db.connect()
+        # Env faylidagi adminlarni bazaga asosiy admin qilib yozib qo'yamiz (seed)
+        await db.seed_main_admins(config.ADMIN_IDS)
     except Exception as e:
         logger.critical(f"Ma'lumotlar bazasiga ulanishda xatolik: {e}")
         sys.exit(1)

@@ -4,6 +4,11 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import db
 from handlers.base import check_user_subscriptions
+
+async def is_main_admin(user_id: int) -> bool:
+    if user_id in config.ADMIN_IDS:
+        return True
+    return await db.is_main_admin_db(user_id)
 import config
 
 logger = logging.getLogger(__name__)
@@ -27,7 +32,7 @@ async def start_cmd(message: types.Message, bot: Bot):
     await db.add_user(user_id, username, fullname)
     
     # Obunani tekshirish
-    is_adm = (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    is_adm = (await is_main_admin(user_id)) or (await db.is_assistant_admin(user_id))
     if is_adm:
         not_subscribed = []
     else:
@@ -45,7 +50,7 @@ async def start_cmd(message: types.Message, bot: Bot):
 @user_router.callback_query(F.data == "check_sub")
 async def check_sub_callback(call: types.CallbackQuery, bot: Bot):
     user_id = call.from_user.id
-    is_adm = (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    is_adm = (await is_main_admin(user_id)) or (await db.is_assistant_admin(user_id))
     if is_adm:
         not_subscribed = []
     else:
@@ -70,7 +75,7 @@ async def movie_search_handler(message: types.Message, bot: Bot):
     code = message.text.strip()
     
     # Obunani tekshirish
-    is_adm = (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    is_adm = (await is_main_admin(user_id)) or (await db.is_assistant_admin(user_id))
     if is_adm:
         not_subscribed = []
     else:

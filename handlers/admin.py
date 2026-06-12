@@ -30,13 +30,22 @@ class AdminStates(StatesGroup):
     
     # Yordamchi admin qo'shish
     waiting_for_coadmin_id = State()
+    
+    # Asosiy admin qo'shish
+    waiting_for_main_admin_id = State()
 
-# Admin ekanligini tekshirish uchun yordamchi funksiya
+# Asosiy adminlikni tekshirish (Env + DB)
+async def is_main_admin(user_id: int) -> bool:
+    if user_id in config.ADMIN_IDS:
+        return True
+    return await db.is_main_admin_db(user_id)
+
+# Admin ekanligini tekshirish uchun yordamchi funksiya (asosiy yoki yordamchi)
 async def check_admin(user_id: int) -> bool:
-    return (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    return (await is_main_admin(user_id)) or (await db.is_assistant_admin(user_id))
 
 async def get_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    is_main = user_id in config.ADMIN_IDS
+    is_main = await is_main_admin(user_id)
     if is_main:
         keyboard = [
             [
@@ -52,8 +61,12 @@ async def get_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="➖ Kino o'chirish", callback_data="admin_remove_movie")
             ],
             [
-                InlineKeyboardButton(text="➕ Admin qo'shish", callback_data="admin_add_coadmin"),
-                InlineKeyboardButton(text="➖ Admin o'chirish", callback_data="admin_remove_coadmin")
+                InlineKeyboardButton(text="➕ Yordamchi admin", callback_data="admin_add_coadmin"),
+                InlineKeyboardButton(text="➖ Yordamchi admin", callback_data="admin_remove_coadmin")
+            ],
+            [
+                InlineKeyboardButton(text="➕ Asosiy admin", callback_data="admin_add_main"),
+                InlineKeyboardButton(text="➖ Asosiy admin", callback_data="admin_remove_main")
             ],
             [
                 InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="admin_broadcast")
@@ -90,13 +103,13 @@ async def is_callback_admin(call: types.CallbackQuery) -> bool:
 
 # Faqat asosiy adminligini tekshiruvchi yordamchilar
 async def is_sender_main_admin(message: types.Message) -> bool:
-    if message.from_user.id not in config.ADMIN_IDS:
+    if not await is_main_admin(message.from_user.id):
         await message.answer("❌ Siz admin emassiz.")
         return False
     return True
 
 async def is_callback_main_admin(call: types.CallbackQuery) -> bool:
-    if call.from_user.id not in config.ADMIN_IDS:
+    if not await is_main_admin(call.from_user.id):
         await call.answer("❌ Siz admin emassiz.", show_alert=True)
         return False
     return True
@@ -678,3 +691,106 @@ async def execute_coadmin_removal(call: types.CallbackQuery):
     await call.answer("✅ Yordamchi admin muvaffaqiyatli o'chirildi.", show_alert=True)
     
     await show_coadmins_for_removal(call)
+
+
+# --- ASOSIY ADMINLARNI BOSHQARISH (MAIN ADMINS) ---
+
+@admin_router.callback_query(F.data == "admin_add_main")
+async def start_add_main_admin(call: types.CallbackQuery, state: FSMContext):
+    if not await is_callback_main_admin(call):
+        return
+    await state.set_state(AdminStates.waiting_for_main_admin_id)
+    await call.message.edit_text(
+        "📝 Yangi asosiy adminning Telegram ID raqamini yuboring (faqat raqamlar, masalan: 12345678):",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@admin_router.message(AdminStates.waiting_for_main_admin_id)
+async def process_main_admin_id(message: types.Message, state: FSMContext):
+    if not await is_sender_main_admin(message):
+        return
+        
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer(
+            "❌ Telegram ID faqat raqamlardan iborat bo'lishi kerak. Iltimos, to'g'ri ID kiriting:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+        
+    new_admin_id = int(text)
+    
+    # Allaqachon asosiy admin ekanligini tekshirish
+    if await is_main_admin(new_admin_id):
+        await message.answer(
+            "⚠️ Ushbu foydalanuvchi allaqachon asosiy admin hisoblanadi. Boshqa ID yuboring:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+        
+    # Bazaga yozish
+    await db.add_main_admin(new_admin_id, message.from_user.id)
+    # Agar u avval yordamchi admin bo'lsa, uni yordamchilikdan o'chiramiz
+    if await db.is_assistant_admin(new_admin_id):
+        await db.remove_assistant_admin(new_admin_id)
+        
+    await state.clear()
+    
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer(f"✅ Yangi asosiy admin muvaffaqiyatli qo'shildi! (ID: {new_admin_id})", reply_markup=markup)
+
+@admin_router.callback_query(F.data == "admin_remove_main")
+async def show_main_admins_for_removal(call: types.CallbackQuery):
+    if not await is_callback_main_admin(call):
+        return
+        
+    # Env faylidagi adminlar asosiy (system) adminlardir, ularni o'chirib bo'lmaydi (xavfsizlik uchun)
+    db_admins = await db.get_main_admins_db()
+    
+    # Faqat bazadan qo'shilganlarini o'chira olamiz (Env-dagilarni emas)
+    removeable_admins = [a for a in db_admins if a['user_id'] not in config.ADMIN_IDS]
+    
+    if not removeable_admins:
+        markup = await get_admin_keyboard(call.from_user.id)
+        await call.message.edit_text(
+            "❌ O'chirish mumkin bo'lgan asosiy adminlar topilmadi.\n"
+            "(Tizim/Env-dan qo'shilgan adminlarni faqat env fayli orqali o'chirish mumkin).",
+            reply_markup=markup
+        )
+        return
+        
+    keyboard = []
+    for admin in removeable_admins:
+        keyboard.append([InlineKeyboardButton(text=f"❌ ID: {admin['user_id']}", callback_data=f"admin_del_main_conf:{admin['user_id']}")])
+        
+    keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin_cancel")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await call.message.edit_text("➖ O'chirmoqchi bo'lgan asosiy adminni tanlang:", reply_markup=markup)
+
+@admin_router.callback_query(F.data.startswith("admin_del_main_conf:"))
+async def confirm_main_removal(call: types.CallbackQuery):
+    if not await is_callback_main_admin(call):
+        return
+        
+    admin_id = int(call.data.split(":")[1])
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Ha", callback_data=f"admin_del_main_yes:{admin_id}"),
+            InlineKeyboardButton(text="❌ Yo'q", callback_data="admin_remove_main")
+        ]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await call.message.edit_text(f"Rostdan ham ushbu asosiy adminni o'chirmoqchimisiz?\n\n🔹 ID: {admin_id}", reply_markup=markup)
+
+@admin_router.callback_query(F.data.startswith("admin_del_main_yes:"))
+async def execute_main_removal(call: types.CallbackQuery):
+    if not await is_callback_main_admin(call):
+        return
+        
+    admin_id = int(call.data.split(":")[1])
+    await db.remove_main_admin(admin_id)
+    await call.answer("✅ Asosiy admin muvaffaqiyatli o'chirildi.", show_alert=True)
+    
+    await show_main_admins_for_removal(call)

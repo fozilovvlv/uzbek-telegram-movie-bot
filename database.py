@@ -160,6 +160,13 @@ class Database:
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS main_admins (
+                    user_id BIGINT PRIMARY KEY,
+                    added_by BIGINT,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         else:
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -209,6 +216,13 @@ class Database:
             """)
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS assistant_admins (
+                    user_id INTEGER PRIMARY KEY,
+                    added_by INTEGER,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS main_admins (
                     user_id INTEGER PRIMARY KEY,
                     added_by INTEGER,
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -328,6 +342,34 @@ class Database:
 
     async def get_assistant_admins(self):
         return await self.fetch("SELECT * FROM assistant_admins ORDER BY added_at DESC")
+
+    # --- Asosiy adminlar (Main Admins) ---
+    async def add_main_admin(self, user_id: int, added_by: int):
+        query = """
+            INSERT INTO main_admins (user_id, added_by, added_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) DO NOTHING
+        """
+        await self.execute(query, user_id, added_by)
+
+    async def remove_main_admin(self, user_id: int):
+        await self.execute("DELETE FROM main_admins WHERE user_id = $1", user_id)
+
+    async def is_main_admin_db(self, user_id: int) -> bool:
+        res = await self.fetchrow("SELECT user_id FROM main_admins WHERE user_id = $1", user_id)
+        return res is not None
+
+    async def get_main_admins_db(self):
+        return await self.fetch("SELECT * FROM main_admins ORDER BY added_at DESC")
+
+    async def seed_main_admins(self, admin_ids: list):
+        for admin_id in admin_ids:
+            query = """
+                INSERT INTO main_admins (user_id, added_by, added_at)
+                VALUES ($1, 0, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO NOTHING
+            """
+            await self.execute(query, admin_id)
 
 # Global ma'lumotlar bazasi obyekti
 db = Database(config.DATABASE_URL)
