@@ -27,29 +27,46 @@ class AdminStates(StatesGroup):
     
     # Reklama tarqatish
     waiting_for_broadcast_msg = State()
+    
+    # Yordamchi admin qo'shish
+    waiting_for_coadmin_id = State()
 
-# Admin ekanligini tekshirish uchun middleware yoki dekorator funksiyasi
-def check_admin(user_id: int) -> bool:
-    return config.is_admin(user_id)
+# Admin ekanligini tekshirish uchun yordamchi funksiya
+async def check_admin(user_id: int) -> bool:
+    return (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
 
-def get_admin_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [
-            InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="admin_add_channel"),
-            InlineKeyboardButton(text="➖ Kanal o'chirish", callback_data="admin_remove_channel")
-        ],
-        [
-            InlineKeyboardButton(text="📋 Kanallar ro'yxati", callback_data="admin_list_channels"),
-            InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")
-        ],
-        [
-            InlineKeyboardButton(text="➕ Kino qo'shish", callback_data="admin_add_movie"),
-            InlineKeyboardButton(text="➖ Kino o'chirish", callback_data="admin_remove_movie")
-        ],
-        [
-            InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="admin_broadcast")
+async def get_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    is_main = user_id in config.ADMIN_IDS
+    if is_main:
+        keyboard = [
+            [
+                InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="admin_add_channel"),
+                InlineKeyboardButton(text="➖ Kanal o'chirish", callback_data="admin_remove_channel")
+            ],
+            [
+                InlineKeyboardButton(text="📋 Kanallar ro'yxati", callback_data="admin_list_channels"),
+                InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")
+            ],
+            [
+                InlineKeyboardButton(text="➕ Kino qo'shish", callback_data="admin_add_movie"),
+                InlineKeyboardButton(text="➖ Kino o'chirish", callback_data="admin_remove_movie")
+            ],
+            [
+                InlineKeyboardButton(text="➕ Admin qo'shish", callback_data="admin_add_coadmin"),
+                InlineKeyboardButton(text="➖ Admin o'chirish", callback_data="admin_remove_coadmin")
+            ],
+            [
+                InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="admin_broadcast")
+            ]
         ]
-    ]
+    else:
+        # Faqat kino qo'shish tugmasi bo'lgan cheklangan menyu (yordamchi admin uchun)
+        keyboard = [
+            [
+                InlineKeyboardButton(text="➕ Kino qo'shish", callback_data="admin_add_movie"),
+                InlineKeyboardButton(text="❌ Chiqish", callback_data="admin_cancel")
+            ]
+        ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_cancel_keyboard() -> InlineKeyboardMarkup:
@@ -57,16 +74,29 @@ def get_cancel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_cancel")]
     ])
 
-# Xabar admin ekanligini tekshiruvchi yordamchi
+# Xabar admin ekanligini tekshiruvchi yordamchi (asosiy yoki yordamchi)
 async def is_sender_admin(message: types.Message) -> bool:
-    if not check_admin(message.from_user.id):
+    if not await check_admin(message.from_user.id):
         await message.answer("❌ Siz admin emassiz.")
         return False
     return True
 
-# Callback so'rov admin ekanligini tekshiruvchi yordamchi
+# Callback so'rov admin ekanligini tekshiruvchi yordamchi (asosiy yoki yordamchi)
 async def is_callback_admin(call: types.CallbackQuery) -> bool:
-    if not check_admin(call.from_user.id):
+    if not await check_admin(call.from_user.id):
+        await call.answer("❌ Siz admin emassiz.", show_alert=True)
+        return False
+    return True
+
+# Faqat asosiy adminligini tekshiruvchi yordamchilar
+async def is_sender_main_admin(message: types.Message) -> bool:
+    if message.from_user.id not in config.ADMIN_IDS:
+        await message.answer("❌ Siz admin emassiz.")
+        return False
+    return True
+
+async def is_callback_main_admin(call: types.CallbackQuery) -> bool:
+    if call.from_user.id not in config.ADMIN_IDS:
         await call.answer("❌ Siz admin emassiz.", show_alert=True)
         return False
     return True
@@ -75,7 +105,8 @@ async def is_callback_admin(call: types.CallbackQuery) -> bool:
 async def admin_panel(message: types.Message):
     if not await is_sender_admin(message):
         return
-    await message.answer("🛠 Admin paneliga xush kelibsiz. Kerakli bo'limni tanlang:", reply_markup=get_admin_keyboard())
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer("🛠 Admin paneliga xush kelibsiz. Kerakli bo'limni tanlang:", reply_markup=markup)
 
 # Cancel callback (Bekor qilish)
 @admin_router.callback_query(F.data == "admin_cancel")
@@ -83,20 +114,21 @@ async def cancel_handler(call: types.CallbackQuery, state: FSMContext):
     if not await is_callback_admin(call):
         return
     await state.clear()
-    await call.message.edit_text("❌ Amal bekor qilindi.", reply_markup=get_admin_keyboard())
+    markup = await get_admin_keyboard(call.from_user.id)
+    await call.message.edit_text("❌ Amal bekor qilindi.", reply_markup=markup)
 
 # --- KANAL QO'SHISH FLOW (FSM) ---
 
 @admin_router.callback_query(F.data == "admin_add_channel")
 async def start_add_channel(call: types.CallbackQuery, state: FSMContext):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
     await state.set_state(AdminStates.waiting_for_channel_name)
     await call.message.edit_text("📝 Kanal nomini yuboring.", reply_markup=get_cancel_keyboard())
 
 @admin_router.message(AdminStates.waiting_for_channel_name)
 async def process_channel_name(message: types.Message, state: FSMContext):
-    if not await is_sender_admin(message):
+    if not await is_sender_main_admin(message):
         return
     
     channel_name = message.text.strip()
@@ -122,7 +154,7 @@ def parse_public_username(link: str) -> str:
 
 @admin_router.message(AdminStates.waiting_for_channel_link)
 async def process_channel_link(message: types.Message, state: FSMContext, bot: Bot):
-    if not await is_sender_admin(message):
+    if not await is_sender_main_admin(message):
         return
         
     link = message.text.strip() if message.text else ""
@@ -198,12 +230,13 @@ async def process_channel_link(message: types.Message, state: FSMContext, bot: B
     # Bazaga saqlash
     await db.add_sponsor(channel_id, channel_name, link)
     await state.clear()
-    await message.answer("✅ Kanal muvaffaqiyatli qo'shildi.", reply_markup=get_admin_keyboard())
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer("✅ Kanal muvaffaqiyatli qo'shildi.", reply_markup=markup)
 
 # Fallback holati (Kanal ID sini aniqlash uchun)
 @admin_router.message(AdminStates.waiting_for_channel_id_fallback)
 async def process_channel_id_fallback(message: types.Message, state: FSMContext, bot: Bot):
-    if not await is_sender_admin(message):
+    if not await is_sender_main_admin(message):
         return
         
     channel_id = None
@@ -250,36 +283,40 @@ async def process_channel_id_fallback(message: types.Message, state: FSMContext,
     # Bazaga saqlash
     await db.add_sponsor(channel_id, channel_name, channel_link)
     await state.clear()
-    await message.answer("✅ Kanal muvaffaqiyatli qo'shildi.", reply_markup=get_admin_keyboard())
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer("✅ Kanal muvaffaqiyatli qo'shildi.", reply_markup=markup)
 
 # --- KANALLAR RO'YXATI ---
 
 @admin_router.callback_query(F.data == "admin_list_channels")
 async def list_channels_callback(call: types.CallbackQuery):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
         
     sponsors = await db.get_sponsors()
     if not sponsors:
-        await call.message.edit_text("📋 Kanallar ro'yxati bo'sh.", reply_markup=get_admin_keyboard())
+        markup = await get_admin_keyboard(call.from_user.id)
+        await call.message.edit_text("📋 Kanallar ro'yxati bo'sh.", reply_markup=markup)
         return
         
     text = "📋 Kanallar ro'yxati:\n\n"
     for idx, chan in enumerate(sponsors, 1):
         text += f"• {chan['name']} — {chan['invite_link']}\n"
         
-    await call.message.edit_text(text, reply_markup=get_admin_keyboard(), disable_web_page_preview=True)
+    markup = await get_admin_keyboard(call.from_user.id)
+    await call.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
 
 # --- KANAL O'CHIRISH FLOW ---
 
 @admin_router.callback_query(F.data == "admin_remove_channel")
 async def show_channels_for_removal(call: types.CallbackQuery):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
         
     sponsors = await db.get_sponsors()
     if not sponsors:
-        await call.message.edit_text("❌ O'chirish uchun kanallar mavjud emas.", reply_markup=get_admin_keyboard())
+        markup = await get_admin_keyboard(call.from_user.id)
+        await call.message.edit_text("❌ O'chirish uchun kanallar mavjud emas.", reply_markup=markup)
         return
         
     keyboard = []
@@ -293,7 +330,7 @@ async def show_channels_for_removal(call: types.CallbackQuery):
 
 @admin_router.callback_query(F.data.startswith("admin_del_conf:"))
 async def confirm_channel_removal(call: types.CallbackQuery):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
         
     channel_id = int(call.data.split(":")[1])
@@ -316,7 +353,7 @@ async def confirm_channel_removal(call: types.CallbackQuery):
 
 @admin_router.callback_query(F.data.startswith("admin_del_yes:"))
 async def execute_channel_removal(call: types.CallbackQuery):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
         
     channel_id = int(call.data.split(":")[1])
@@ -326,7 +363,8 @@ async def execute_channel_removal(call: types.CallbackQuery):
     # Kanallar ro'yxatiga qaytish
     sponsors = await db.get_sponsors()
     if not sponsors:
-        await call.message.edit_text("✅ Kanal o'chirildi. Kanallar ro'yxati bo'sh.", reply_markup=get_admin_keyboard())
+        markup = await get_admin_keyboard(call.from_user.id)
+        await call.message.edit_text("✅ Kanal o'chirildi. Kanallar ro'yxati bo'sh.", reply_markup=markup)
     else:
         await show_channels_for_removal(call)
 
@@ -334,7 +372,7 @@ async def execute_channel_removal(call: types.CallbackQuery):
 
 @admin_router.callback_query(F.data == "admin_stats")
 async def show_statistics(call: types.CallbackQuery):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
         
     users_count = await db.get_users_count()
@@ -438,20 +476,21 @@ async def process_movie_file(message: types.Message, state: FSMContext, bot: Bot
     )
     
     await state.clear()
-    await message.answer("✅ Kino qo'shildi!", reply_markup=get_admin_keyboard())
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer("✅ Kino qo'shildi!", reply_markup=markup)
 
 # --- KINO O'CHIRISH FLOW (FSM) ---
 
 @admin_router.callback_query(F.data == "admin_remove_movie")
 async def start_remove_movie(call: types.CallbackQuery, state: FSMContext):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
     await state.set_state(AdminStates.waiting_for_delete_movie_code)
     await call.message.edit_text("O'chirmoqchi bo'lgan kino kodini kiriting:", reply_markup=get_cancel_keyboard())
 
 @admin_router.message(AdminStates.waiting_for_delete_movie_code)
 async def process_remove_movie(message: types.Message, state: FSMContext):
-    if not await is_sender_admin(message):
+    if not await is_sender_main_admin(message):
         return
         
     code = message.text.strip()
@@ -466,13 +505,14 @@ async def process_remove_movie(message: types.Message, state: FSMContext):
         
     await db.remove_movie(code)
     await state.clear()
-    await message.answer(f"✅ Kod: {code} bo'lgan kino muvaffaqiyatli o'chirildi.", reply_markup=get_admin_keyboard())
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer(f"✅ Kod: {code} bo'lgan kino muvaffaqiyatli o'chirildi.", reply_markup=markup)
 
 # --- REKLAMA / XABAR YUBORISH (BROADCAST) ---
 
 @admin_router.callback_query(F.data == "admin_broadcast")
 async def start_broadcast(call: types.CallbackQuery, state: FSMContext):
-    if not await is_callback_admin(call):
+    if not await is_callback_main_admin(call):
         return
     await state.set_state(AdminStates.waiting_for_broadcast_msg)
     await call.message.edit_text(
@@ -482,14 +522,15 @@ async def start_broadcast(call: types.CallbackQuery, state: FSMContext):
 
 @admin_router.message(AdminStates.waiting_for_broadcast_msg)
 async def process_broadcast(message: types.Message, state: FSMContext, bot: Bot):
-    if not await is_sender_admin(message):
+    if not await is_sender_main_admin(message):
         return
         
     # Xabarni bekor qilish holati emasligini tekshiramiz
     user_ids = await db.get_all_users_ids()
     if not user_ids:
         await state.clear()
-        await message.answer("❌ Botda foydalanuvchilar mavjud emas.", reply_markup=get_admin_keyboard())
+        markup = await get_admin_keyboard(message.from_user.id)
+        await message.answer("❌ Botda foydalanuvchilar mavjud emas.", reply_markup=markup)
         return
         
     progress_msg = await message.answer(f"⏳ Reklama yuborilmoqda: 0/{len(user_ids)}...")
@@ -522,7 +563,7 @@ async def process_broadcast(message: types.Message, state: FSMContext, bot: Bot)
         f"✅ Xabar muvaffaqiyatli yuborildi!\n\n"
         f"🟢 Yetkazildi: {success} ta\n"
         f"🔴 Yetkazilmadi: {failed} ta",
-        reply_markup=get_admin_keyboard()
+        reply_markup=await get_admin_keyboard(message.from_user.id)
     )
 
 @admin_router.my_chat_member()
@@ -539,3 +580,101 @@ async def my_chat_member_handler(update: types.ChatMemberUpdated):
             await db.remove_bot_channel(chat.id)
             logger.info(f"Bot '{chat.title}' kanalidan olib tashlandi (ID: {chat.id})")
 
+
+
+# --- YORDAMCHI ADMINLARNI BOSHQARISH (CO-ADMINS) ---
+
+@admin_router.callback_query(F.data == "admin_add_coadmin")
+async def start_add_coadmin(call: types.CallbackQuery, state: FSMContext):
+    if not await is_callback_main_admin(call):
+        return
+    await state.set_state(AdminStates.waiting_for_coadmin_id)
+    await call.message.edit_text(
+        "📝 Yangi yordamchi adminning Telegram ID raqamini yuboring (faqat raqamlar, masalan: 12345678):",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@admin_router.message(AdminStates.waiting_for_coadmin_id)
+async def process_coadmin_id(message: types.Message, state: FSMContext):
+    if not await is_sender_main_admin(message):
+        return
+        
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer(
+            "❌ Telegram ID faqat raqamlardan iborat bo'lishi kerak. Iltimos, to'g'ri ID kiriting:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+        
+    coadmin_id = int(text)
+    
+    # Asosiy adminlikni tekshirish
+    if coadmin_id in config.ADMIN_IDS:
+        await message.answer(
+            "⚠️ Tizimda ushbu foydalanuvchi allaqachon asosiy admin hisoblanadi. Boshqa ID yuboring:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+        
+    # Allaqachon yordamchi admin ekanligini tekshirish
+    if await db.is_assistant_admin(coadmin_id):
+        await message.answer(
+            "⚠️ Ushbu foydalanuvchi allaqachon yordamchi admin sifatida qo'shilgan. Boshqa ID yuboring:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+        
+    # Bazaga yozish
+    await db.add_assistant_admin(coadmin_id, message.from_user.id)
+    await state.clear()
+    
+    markup = await get_admin_keyboard(message.from_user.id)
+    await message.answer(f"✅ Yordamchi admin muvaffaqiyatli qo'shildi! (ID: {coadmin_id})", reply_markup=markup)
+
+@admin_router.callback_query(F.data == "admin_remove_coadmin")
+async def show_coadmins_for_removal(call: types.CallbackQuery):
+    if not await is_callback_main_admin(call):
+        return
+        
+    coadmins = await db.get_assistant_admins()
+    if not coadmins:
+        markup = await get_admin_keyboard(call.from_user.id)
+        await call.message.edit_text("❌ Yordamchi adminlar ro'yxati bo'sh.", reply_markup=markup)
+        return
+        
+    keyboard = []
+    for admin in coadmins:
+        keyboard.append([InlineKeyboardButton(text=f"❌ ID: {admin['user_id']}", callback_data=f"admin_del_coadmin_conf:{admin['user_id']}")])
+        
+    keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin_cancel")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await call.message.edit_text("➖ O'chirmoqchi bo'lgan yordamchi adminni tanlang:", reply_markup=markup)
+
+@admin_router.callback_query(F.data.startswith("admin_del_coadmin_conf:"))
+async def confirm_coadmin_removal(call: types.CallbackQuery):
+    if not await is_callback_main_admin(call):
+        return
+        
+    coadmin_id = int(call.data.split(":")[1])
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Ha", callback_data=f"admin_del_coadmin_yes:{coadmin_id}"),
+            InlineKeyboardButton(text="❌ Yo'q", callback_data="admin_remove_coadmin")
+        ]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await call.message.edit_text(f"Rostdan ham ushbu yordamchi adminni o'chirmoqchimisiz?\n\n🔹 ID: {coadmin_id}", reply_markup=markup)
+
+@admin_router.callback_query(F.data.startswith("admin_del_coadmin_yes:"))
+async def execute_coadmin_removal(call: types.CallbackQuery):
+    if not await is_callback_main_admin(call):
+        return
+        
+    coadmin_id = int(call.data.split(":")[1])
+    await db.remove_assistant_admin(coadmin_id)
+    await call.answer("✅ Yordamchi admin muvaffaqiyatli o'chirildi.", show_alert=True)
+    
+    await show_coadmins_for_removal(call)

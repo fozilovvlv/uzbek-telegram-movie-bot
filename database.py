@@ -153,6 +153,13 @@ class Database:
                     PRIMARY KEY (channel_id, user_id)
                 )
             """)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS assistant_admins (
+                    user_id BIGINT PRIMARY KEY,
+                    added_by BIGINT,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         else:
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -198,6 +205,13 @@ class Database:
                     status TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (channel_id, user_id)
+                )
+            """)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS assistant_admins (
+                    user_id INTEGER PRIMARY KEY,
+                    added_by INTEGER,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
@@ -295,6 +309,25 @@ class Database:
 
     async def remove_join_request(self, channel_id: int, user_id: int):
         await self.execute("DELETE FROM join_requests WHERE channel_id = $1 AND user_id = $2", channel_id, user_id)
+
+    # --- Yordamchi adminlar (Assistant Admins) ---
+    async def add_assistant_admin(self, user_id: int, added_by: int):
+        query = """
+            INSERT INTO assistant_admins (user_id, added_by, added_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) DO NOTHING
+        """
+        await self.execute(query, user_id, added_by)
+
+    async def remove_assistant_admin(self, user_id: int):
+        await self.execute("DELETE FROM assistant_admins WHERE user_id = $1", user_id)
+
+    async def is_assistant_admin(self, user_id: int) -> bool:
+        res = await self.fetchrow("SELECT user_id FROM assistant_admins WHERE user_id = $1", user_id)
+        return res is not None
+
+    async def get_assistant_admins(self):
+        return await self.fetch("SELECT * FROM assistant_admins ORDER BY added_at DESC")
 
 # Global ma'lumotlar bazasi obyekti
 db = Database(config.DATABASE_URL)

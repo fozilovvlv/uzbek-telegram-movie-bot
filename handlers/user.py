@@ -27,7 +27,11 @@ async def start_cmd(message: types.Message, bot: Bot):
     await db.add_user(user_id, username, fullname)
     
     # Obunani tekshirish
-    not_subscribed = await check_user_subscriptions(bot, user_id)
+    is_adm = (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    if is_adm:
+        not_subscribed = []
+    else:
+        not_subscribed = await check_user_subscriptions(bot, user_id)
     
     if not_subscribed:
         markup = get_sub_keyboard(not_subscribed)
@@ -41,7 +45,11 @@ async def start_cmd(message: types.Message, bot: Bot):
 @user_router.callback_query(F.data == "check_sub")
 async def check_sub_callback(call: types.CallbackQuery, bot: Bot):
     user_id = call.from_user.id
-    not_subscribed = await check_user_subscriptions(bot, user_id)
+    is_adm = (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    if is_adm:
+        not_subscribed = []
+    else:
+        not_subscribed = await check_user_subscriptions(bot, user_id)
     
     if not_subscribed:
         await call.answer("⚠️ Siz hali barcha kanallarga obuna bo'lmadingiz!", show_alert=True)
@@ -62,7 +70,11 @@ async def movie_search_handler(message: types.Message, bot: Bot):
     code = message.text.strip()
     
     # Obunani tekshirish
-    not_subscribed = await check_user_subscriptions(bot, user_id)
+    is_adm = (user_id in config.ADMIN_IDS) or (await db.is_assistant_admin(user_id))
+    if is_adm:
+        not_subscribed = []
+    else:
+        not_subscribed = await check_user_subscriptions(bot, user_id)
     if not_subscribed:
         markup = get_sub_keyboard(not_subscribed)
         await message.answer(
