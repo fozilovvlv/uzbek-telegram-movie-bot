@@ -144,6 +144,15 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS join_requests (
+                    channel_id BIGINT,
+                    user_id BIGINT,
+                    status VARCHAR(50),
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (channel_id, user_id)
+                )
+            """)
         else:
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -180,6 +189,15 @@ class Database:
                     title TEXT,
                     username TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS join_requests (
+                    channel_id INTEGER,
+                    user_id INTEGER,
+                    status TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (channel_id, user_id)
                 )
             """)
 
@@ -261,6 +279,22 @@ class Database:
 
     async def get_bot_channels(self):
         return await self.fetch("SELECT * FROM bot_channels")
+
+    # --- Qo'shilish so'rovlari (Join Requests) ---
+    async def add_join_request(self, channel_id: int, user_id: int, status: str):
+        query = """
+            INSERT INTO join_requests (channel_id, user_id, status, updated_at)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (channel_id, user_id) DO UPDATE 
+            SET status = EXCLUDED.status, updated_at = CURRENT_TIMESTAMP
+        """
+        await self.execute(query, channel_id, user_id, status)
+
+    async def get_join_request(self, channel_id: int, user_id: int):
+        return await self.fetchrow("SELECT * FROM join_requests WHERE channel_id = $1 AND user_id = $2", channel_id, user_id)
+
+    async def remove_join_request(self, channel_id: int, user_id: int):
+        await self.execute("DELETE FROM join_requests WHERE channel_id = $1 AND user_id = $2", channel_id, user_id)
 
 # Global ma'lumotlar bazasi obyekti
 db = Database(config.DATABASE_URL)

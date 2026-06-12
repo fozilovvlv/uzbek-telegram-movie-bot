@@ -116,3 +116,61 @@ async def movie_search_handler(message: types.Message, bot: Bot):
     except Exception as e:
         logger.error(f"Kinoni yuborishda xatolik yuz berdi (kod: {code}): {e}")
         await message.answer("⚠️ Kechirasiz, kinoni yuborishda texnik xatolik yuz berdi. Iltimos, keyinroq qayta urinib ko'ring.")
+
+# --- Yopiq kanallarga qo'shilish so'rovlarini (Join Requests) qayd etish ---
+@user_router.chat_join_request()
+async def on_chat_join_request(request: types.ChatJoinRequest):
+    chat = request.chat
+    user_id = request.from_user.id
+    
+    # Kanal homiy kanallar ro'yxatida borligini tekshiramiz
+    sponsors = await db.get_sponsors()
+    sponsor = next((s for s in sponsors if s['channel_id'] == chat.id), None)
+    if not sponsor:
+        return
+        
+    # Bazaga qo'shilish so'rovi yuborilganligini yozib qo'yamiz
+    await db.add_join_request(chat.id, user_id, "pending")
+    logger.info(f"Foydalanuvchi {user_id} '{chat.title}' kanaliga qo'shilish so'rovini yubordi.")
+
+# --- Kanal a'zoligi holati o'zgarganda (masalan, tark etganda) ogohlantirish ---
+@user_router.chat_member()
+async def on_chat_member_update(update: types.ChatMemberUpdated, bot: Bot):
+    chat = update.chat
+    if chat.type != "channel":
+        return
+        
+    user_id = update.new_chat_member.user.id
+    old_status = update.old_chat_member.status
+    new_status = update.new_chat_member.status
+    
+    # Kanal homiy kanallar ro'yxatida borligini tekshiramiz
+    sponsors = await db.get_sponsors()
+    sponsor = next((s for s in sponsors if s['channel_id'] == chat.id), None)
+    if not sponsor:
+        return
+        
+    # Agar foydalanuvchi rasman a'zo bo'lsa (admin tasdiqlagan yoki ommaviy kanalga kirgan)
+    if new_status in ['member', 'administrator', 'creator']:
+        await db.remove_join_request(chat.id, user_id)
+        
+    # Agar foydalanuvchi kanalni tark etgan bo'lsa (left, kicked)
+    was_member = old_status in ['member', 'administrator', 'creator']
+    is_no_longer_member = new_status in ['left', 'kicked']
+    
+    if was_member and is_no_longer_member:
+        # Bazadagi so'rovlarni ham tozalaymiz
+        await db.remove_join_request(chat.id, user_id)
+        
+        # Foydalanuvchiga ogohlantirish xabarini yuboramiz
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"⚠️ Siz '{sponsor['name']}' kanalini tark etdingiz!\n\n"
+                     f"Qayta obuna bo'lmasangiz bot xizmatlaridan foydalana olmaysiz:\n"
+                     f"👉 {sponsor['invite_link']}"
+            )
+            logger.info(f"Foydalanuvchi {user_id} '{sponsor['name']}' kanalini tark etgani uchun ogohlantirildi.")
+        except Exception as e:
+            logger.warning(f"Foydalanuvchi {user_id} ga ogohlantirish yuborishda xatolik: {e}")
+
